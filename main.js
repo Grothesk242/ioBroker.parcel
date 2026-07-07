@@ -79,6 +79,25 @@ class Parcel extends utils.Adapter {
 
       httpsAgent: new HttpsCookieAgent({ cookies: { jar: this.cookieJar }, rejectUnauthorized: false }),
     });
+    // Reichere jeden axios-Fehler mit Method/URL/Status an, sonst kommen im Log
+    // nur nichtssagende "Error: read ECONNRESET"-Zeilen an.
+    this.requestClient.interceptors.response.use(
+      (res) => res,
+      (error) => {
+        try {
+          const cfg = error.config || {};
+          const method = (cfg.method || 'GET').toUpperCase();
+          const url = cfg.url || '';
+          const status = error.response && error.response.status;
+          const code = error.code || (status ? `HTTP ${status}` : 'NO_RESPONSE');
+          const msg = error.message || 'unknown';
+          error.contextInfo = `${method} ${url} → ${code} (${msg})`;
+        } catch {
+          // don't obscure the original error if annotation fails
+        }
+        return Promise.reject(error);
+      },
+    );
     if (this.config.amzActive !== false && this.config.amzusername && this.config.amzpassword) {
       this.log.info('Login to Amazon');
       await this.loginAmz();
@@ -195,6 +214,53 @@ class Parcel extends utils.Adapter {
     this.setState('auth.dhlSession', JSON.stringify(sessionData), true);
     this.dhlLoginSuccess = true;
   }
+  /**
+   * Loggt einen HTTP-Fehler mit Kontext (Provider, Method, URL, Status, Body-Preview).
+   * Ersatz für die vielen `this.log.error(error)`-Stellen, die sonst nur nichtssagende
+   * "Error: read ECONNRESET"-Zeilen produzieren.
+   *
+   * Erkennt automatisch, ob es sich um einen echten Axios-Fehler (mit `.config` oder
+   * `.response`) oder um einen normalen JS-Error (JSON.parse, DOM, IO) handelt und
+   * gibt entsprechend den vollen HTTP-Kontext oder nur Message + Stack aus. So
+   * werden Parse-/State-Exceptions nicht mehr fälschlich als "GET  → NO_RESPONSE"
+   * geloggt.
+   *
+   * @param {string} scope - Provider-Kürzel bzw. Ort, z.B. "GLS/login" oder "DHL/fetch"
+   * @param {any} error - der geworfene Fehler
+   */
+  logAxiosError(scope, error) {
+    if (!error) {
+      this.log.error(`[${scope}] Unknown error (falsy)`);
+      return;
+    }
+    const isAxiosError = !!(error.config || error.response || error.request || error.isAxiosError);
+    if (!isAxiosError) {
+      this.log.error(`[${scope}] ${error.message || String(error)}`);
+      if (this.log.debug && error.stack) {
+        this.log.debug(`[${scope}] stack: ${error.stack}`);
+      }
+      return;
+    }
+    const cfg = (error.config || {});
+    const method = (cfg.method || 'GET').toUpperCase();
+    const url = cfg.url || '';
+    const status = error.response && error.response.status;
+    const code = error.code || (status ? `HTTP ${status}` : 'NO_RESPONSE');
+    const msg = error.message || 'unknown';
+    this.log.error(`[${scope}] ${method} ${url} → ${code} (${msg})`);
+    if (error.response && error.response.data) {
+      let body = error.response.data;
+      if (typeof body !== 'string') {
+        try { body = JSON.stringify(body); } catch { body = String(body); }
+      }
+      if (body && body.length) {
+        this.log.error(`[${scope}] body: ${body.length > 500 ? body.slice(0, 500) + '…' : body}`);
+      }
+    }
+    if (this.log.debug && error.stack) {
+      this.log.debug(`[${scope}] stack: ${error.stack}`);
+    }
+  }
   async loginAli() {
     const loginData = await this.requestClient({
       method: 'get',
@@ -222,14 +288,14 @@ class Parcel extends utils.Adapter {
             const loginData = res.data.split('window.viewData = ')[1].split(';')[0].replace(/\\/g, '');
             return JSON.parse(loginData).loginFormData;
           } catch (error) {
-            this.log.error(error);
+            this.logAxiosError('AliExpress/login', error);
           }
         } else {
           this.log.error('Failed Step 1 Aliexpress');
         }
       })
       .catch((error) => {
-        this.log.error(error);
+        this.logAxiosError('AliExpress/login', error);
         if (error.response) {
           this.log.error(JSON.stringify(error.response.data));
         }
@@ -269,7 +335,7 @@ class Parcel extends utils.Adapter {
           //  this.log.debug(JSON.stringify(res.data));
         })
         .catch((error) => {
-          this.log.error(error);
+          this.logAxiosError('AliExpress/login', error);
           if (error.response) {
             this.log.error(JSON.stringify(error.response.data));
           }
@@ -285,8 +351,7 @@ class Parcel extends utils.Adapter {
             : this.log.info('Login to Aliexpress successful');
         })
         .catch(async (error) => {
-          error.response && this.log.error(JSON.stringify(error.response.data));
-          this.log.error(error);
+          this.logAxiosError('AliExpress/verify', error);
         });
     } else {
       this.log.warn('AliExpress MFA login is not supported');
@@ -360,7 +425,7 @@ class Parcel extends utils.Adapter {
         this.log.debug(verifyResult.data);
       } catch (error) {
         this.log.error('Failed to submit Amazon verification code');
-        this.log.error(error);
+        this.logAxiosError('Amazon/login', error);
         if (error.response) {
           this.log.debug('Verification error response: ' + (typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data)));
         }
@@ -411,7 +476,7 @@ class Parcel extends utils.Adapter {
         this.log.error(
           'https://www.amazon.de/ap/signin?openid.return_to=https://www.amazon.de/ap/maplanding&openid.oa2.code_challenge_method=S256&openid.assoc_handle=amzn_mshop_ios_v2_de&openid.identity=http://specs.openid.net/auth/2.0/identifier_select&pageId=amzn_mshop_ios_v2_de&openid.ns.oa2=http://www.amazon.com/ap/ext/oauth/2&openid.claimed_id=http://specs.openid.net/auth/2.0/identifier_select&openid.mode=checkid_setup&openid.oa2.client_id=device:42334146314239333737364334463941393135443746313136363446434238302341334e5748585451344542435a53&openid.oa2.code_challenge=ig2YgHP3AoncuKG0ks5pgr1HUhzwvlST-tuIY2Chi2M&openid.ns.pape=http://specs.openid.net/extensions/pape/1.0&openid.oa2.scope=device_auth_access&openid.ns=http://specs.openid.net/auth/2.0&openid.pape.max_auth_age=0&openid.oa2.response_type=code',
         );
-        this.log.error(error);
+        this.logAxiosError('Amazon/login', error);
         if (error.response) {
           this.log.error(JSON.stringify(error.response.data));
         }
@@ -445,7 +510,7 @@ class Parcel extends utils.Adapter {
         })
         .catch((error) => {
           this.log.error('Amazon untrustet app warning failed');
-          this.log.error(error);
+          this.logAxiosError('Amazon/login', error);
           if (error.response) {
             this.log.error(JSON.stringify(error.response.data));
           }
@@ -497,7 +562,7 @@ class Parcel extends utils.Adapter {
         })
         .catch((error) => {
           this.log.error('Unified email POST failed');
-          this.log.error(error);
+          this.logAxiosError('Amazon/login', error);
           if (error.response) {
             this.log.error(JSON.stringify(error.response.data));
           }
@@ -543,7 +608,7 @@ class Parcel extends utils.Adapter {
         })
         .catch((error) => {
           this.log.error('Failed to post username');
-          this.log.error(error);
+          this.logAxiosError('Amazon/login', error);
           if (error.response) {
             this.log.error(JSON.stringify(error.response.data));
           }
@@ -644,7 +709,7 @@ class Parcel extends utils.Adapter {
                 this.log.error(JSON.stringify(error.response.data));
               }
 
-              this.log.error(error);
+              this.logAxiosError('Amazon/login', error);
             });
           return;
         }
@@ -811,7 +876,7 @@ class Parcel extends utils.Adapter {
           this.setState('info.connection', false, true);
           this.log.error(JSON.stringify(error.response.data));
         }
-        this.log.error(error);
+        this.logAxiosError('Amazon/login', error);
         try {
           delete this.cookieJar.store.idx['amazon.de'];
           delete this.cookieJar.store.idx['www.amazon.de'];
@@ -825,8 +890,7 @@ class Parcel extends utils.Adapter {
       method: 'get',
       url: 'https://my.dpd.de/logout.aspx',
     }).catch(async (error) => {
-      error.response && this.log.error(JSON.stringify(error.response.data));
-      this.log.error(error);
+      this.logAxiosError('DPD/login', error);
     });
     await this.requestClient({
       method: 'post',
@@ -880,7 +944,7 @@ class Parcel extends utils.Adapter {
             return;
           }
 
-          this.log.error(error);
+          this.logAxiosError('DPD/login', error);
           this.log.error(JSON.stringify(error.response.data));
         }
       });
@@ -888,8 +952,7 @@ class Parcel extends utils.Adapter {
       method: 'get',
       url: 'https://my.dpd.de/myParcel.aspx?dpd_token=' + this.dpdToken,
     }).catch(async (error) => {
-      error.response && this.log.error(JSON.stringify(error.response.data));
-      this.log.error(error);
+      this.logAxiosError('DPD/login', error);
     });
   }
   async loginGLS(silent) {
@@ -1159,7 +1222,7 @@ class Parcel extends utils.Adapter {
         return;
       })
       .catch((error) => {
-        this.log.error(error);
+        this.logAxiosError('Hermes/login', error);
         if (error.response) {
           this.log.error(JSON.stringify(error.response.data));
         }
@@ -1233,7 +1296,7 @@ class Parcel extends utils.Adapter {
         return;
       })
       .catch((error) => {
-        this.log.error(error);
+        this.logAxiosError('UPS/login', error);
         if (error.response) {
           this.log.error(JSON.stringify(error.response.data));
         }
@@ -1285,8 +1348,7 @@ class Parcel extends utils.Adapter {
         }
       })
       .catch(async (error) => {
-        error.response && this.log.error(JSON.stringify(error.response.data));
-        this.log.error(error);
+        this.logAxiosError('UPS/login', error);
       });
   }
   async login17TApi() {
@@ -1409,10 +1471,7 @@ class Parcel extends utils.Adapter {
         return;
       })
       .catch(async (error) => {
-        if (error.response) {
-          this.log.error(error);
-          this.log.error(JSON.stringify(error.response.data));
-        }
+        this.logAxiosError('17Track/login', error);
       });
   }
   async updateProvider() {
@@ -1435,7 +1494,7 @@ class Parcel extends utils.Adapter {
           });
         }
       } catch (error) {
-        this.log.error(error);
+        this.logAxiosError('17Track/user', error);
       }
     }
     if (this.sessions['dhl']) {
@@ -1477,7 +1536,7 @@ class Parcel extends utils.Adapter {
             this.log.info('DHL is not available. Maybe the DHL service down or overloaded at the moment');
           } else {
             this.log.error('Failed to get https://www.dhl.de/int-verfolgen/data/search?noRedirect=true&language=de&cid=app');
-            this.log.error(error);
+            this.logAxiosError('DHL/fetch', error);
             error.response && this.log.error(JSON.stringify(error.response.data));
           }
           return [];
@@ -1707,7 +1766,7 @@ class Parcel extends utils.Adapter {
               this.log.info(id + ' is not available. Maybe the service down or overloaded at the moment');
             } else {
               this.log.error(element.url);
-              this.log.error(error);
+              this.logAxiosError('Update/fetch', error);
               error.response && this.log.error(JSON.stringify(error.response.data));
             }
           });
@@ -1979,7 +2038,7 @@ class Parcel extends utils.Adapter {
           }
           return sendungsObject;
         } catch (error) {
-          this.log.error(error);
+          this.logAxiosError('17Track/parse', error);
         }
       });
       this.mergedJson = this.mergedJson.concat(sendungsArray);
@@ -2213,7 +2272,7 @@ class Parcel extends utils.Adapter {
 
       return this.delivery_status.UNKNOWN;
     } catch (error) {
-      this.log.error(error);
+      this.logAxiosError('DeliveredCheck', error);
       return this.delivery_status['ERROR'];
     }
   }
@@ -2234,7 +2293,7 @@ class Parcel extends utils.Adapter {
         this.log.debug(JSON.stringify(res.data));
       })
       .catch((error) => {
-        this.log.error(error);
+        this.logAxiosError('DHL/activateToken', error);
         error.response && this.log.error(JSON.stringify(error.response.data));
       });
   }
@@ -2360,7 +2419,7 @@ class Parcel extends utils.Adapter {
                 stopsStatus = stateObject.mapTracking.calloutMessage;
               }
             } catch (error) {
-              this.log.error(error);
+              this.logAxiosError('Amazon/packages', error);
             }
           }
 
@@ -2428,7 +2487,7 @@ class Parcel extends utils.Adapter {
           };
         })
         .catch((error) => {
-          this.log.error(error);
+          this.logAxiosError('Amazon/packages', error);
           if (error.response) {
             this.log.error(JSON.stringify(error.response.data));
           }
@@ -2531,7 +2590,7 @@ class Parcel extends utils.Adapter {
       })
       .catch((error) => {
         this.log.error('Failed to get Amazon Orders');
-        this.log.error(error);
+        this.logAxiosError('Amazon/orders', error);
         if (error.response) {
           this.log.error(JSON.stringify(error.response.data));
         }
@@ -2574,7 +2633,7 @@ class Parcel extends utils.Adapter {
           })
           .catch((error) => {
             this.log.error('refresh token failed');
-            this.log.error(error);
+            this.logAxiosError('DHL/refresh', error);
             error.response && this.log.error(JSON.stringify(error.response.data));
             this.log.error('Refresh token expired. Bitte einen neuen dhllogin:// Code in den Adaptereinstellungen eingeben.');
             delete this.sessions['dhl'];
@@ -2614,7 +2673,7 @@ class Parcel extends utils.Adapter {
           })
           .catch((error) => {
             this.log.error('refresh token failed');
-            this.log.error(error);
+            this.logAxiosError('Hermes/refresh', error);
             error.response && this.log.error(JSON.stringify(error.response.data));
           });
       }
@@ -2776,14 +2835,14 @@ class Parcel extends utils.Adapter {
                   }
                 })
                 .catch((error) => {
-                  this.log.error(error);
+                  this.logAxiosError('17Track/track', error);
                   if (error.response) {
                     this.log.error(JSON.stringify(error.response.data));
                   }
                 });
             })
             .catch((error) => {
-              this.log.error(error);
+              this.logAxiosError('17Track/track', error);
               if (error.response) {
                 this.log.error(JSON.stringify(error.response.data));
               }
@@ -2806,7 +2865,7 @@ class Parcel extends utils.Adapter {
               this.updateProvider();
             })
             .catch((error) => {
-              this.log.error(error);
+              this.logAxiosError('17Track/order', error);
               if (error.response) {
                 this.log.error(JSON.stringify(error.response.data));
               }
@@ -2910,7 +2969,7 @@ class Parcel extends utils.Adapter {
               try {
                 fs.unlinkSync(`${this.tmpDir}${sep}${uuid}.jpg`);
               } catch (error) {
-                this.log.error(error);
+                this.log.debug('unlink temp image failed: ' + (error && error.message));
               }
             }
           } else {

@@ -119,8 +119,24 @@ class Parcel extends utils.Adapter {
     }
 
     if (this.config.glsActive !== false && this.config.glsusername && this.config.glspassword) {
-      this.log.info('Login to GLS');
-      await this.loginGLS();
+      const glsSessionState = await this.getStateAsync('auth.glsSession');
+      if (glsSessionState && glsSessionState.val) {
+        try {
+          const parsed = JSON.parse(String(glsSessionState.val));
+          if (parsed && parsed.refresh_token) {
+            this.log.info('Reuse existing GLS session, refresh token…');
+            this.sessions['gls'] = parsed;
+            this.glstoken = parsed.access_token;
+            await this.refreshGLSToken();
+          }
+        } catch {
+          // fall through to fresh login
+        }
+      }
+      if (!this.sessions['gls']) {
+        this.log.info('Login to GLS');
+        await this.loginGLS();
+      }
     }
     if (this.config.upsActive !== false && this.config.upsusername && this.config.upspassword) {
       this.log.info('Login to UPS');
@@ -877,81 +893,225 @@ class Parcel extends utils.Adapter {
     });
   }
   async loginGLS(silent) {
-    await this.requestClient({
-      method: 'post',
-      url: 'https://gls-one.de/api/auth',
-      headers: {
-        Accept: 'application/json, text/plain, */*',
-        'X-Selected-Country': 'DE',
-        'Accept-Language': 'de-de',
-        'X-Selected-Language': 'DE',
-        'Content-Type': 'application/json',
-        Origin: 'https://www.gls-one.de',
-        'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 14_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 GLS_App.iOS/v1.3.1',
-        'X-Client-Id': 'iOS',
-        Referer: 'https://www.gls-one.de/de?platform=iOS',
-      },
-      data: JSON.stringify({
-        username: this.config.glsusername,
-        password: this.config.glspassword,
-      }),
-    })
-      .then(async (res) => {
-        this.sessions['gls'] = res.data;
-        if (!res.data.token) {
-          this.log.error(res.data);
-        }
-        this.glstoken = res.data.token;
-      })
-      .catch(async (error) => {
-        error.response && this.log.error(JSON.stringify(error.response.data));
-        this.log.error(error);
+    // Azure AD B2C Authorization-Code + PKCE flow — nachgebaut aus der GLS-App v6.3.0.
+    // Werte aus res/raw/msal_config_prod.json der APK.
+    const CLIENT_ID = 'b990fae6-1647-426b-b0a9-d51fcfed4fc8';
+    const REDIRECT_URI = 'msauth://com.gls.glsappde.consumer/ulmVfvzqq5hHvhon9Kh4lu9Esy8%3D';
+    const AUTHORITY = 'https://login.gls-group.net/login.gls-group.net';
+    const POLICY = 'B2C_1A_PROD_DE_DF_SOCIAL_DEFAULT';
+    const SCOPES = [
+      'openid',
+      'offline_access',
+      'https://glsgroup.onmicrosoft.com/1635def9-6f7b-4720-be2d-7b49f8298756/GLSAPP-READ',
+      'https://glsgroup.onmicrosoft.com/1635def9-6f7b-4720-be2d-7b49f8298756/GLSAPP-WRITE',
+    ].join(' ');
+    const UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36';
+
+    const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const verifier = b64url(crypto.randomBytes(32));
+    const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+
+    // Eigene Cookie-Jar/Client-Instanz für den B2C-Login, damit die Session-Cookies
+    // (x-ms-cpim-*) nicht mit den anderen Providern kollidieren.
+    const b2cJar = new tough.CookieJar();
+    const b2cClient = axios.create({
+      withCredentials: true,
+      httpsAgent: new HttpsCookieAgent({ cookies: { jar: b2cJar }, rejectUnauthorized: false }),
+      maxRedirects: 0,
+      validateStatus: () => true,
+      timeout: 20000,
+    });
+
+    // Schritt 1: /authorize aufrufen und csrf-Token + StateProperties(tx) aus dem HTML scrapen
+    const authUrl =
+      `${AUTHORITY}/${POLICY}/oauth2/v2.0/authorize?` +
+      qs.stringify({
+        client_id: CLIENT_ID,
+        response_type: 'code',
+        redirect_uri: REDIRECT_URI,
+        scope: SCOPES,
+        state: b64url(crypto.randomBytes(16)),
+        nonce: b64url(crypto.randomBytes(16)),
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        response_mode: 'query',
       });
-    if (!this.glstoken) {
+    let csrfToken;
+    let tx;
+    try {
+      const res = await b2cClient.get(authUrl, {
+        headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+      });
+      if (res.status !== 200) {
+        this.log.error(`GLS B2C /authorize HTTP ${res.status}`);
+        return;
+      }
+      const m = String(res.data).match(/var\s+SETTINGS\s*=\s*(\{[\s\S]*?\});/);
+      if (!m) {
+        this.log.error('GLS B2C: SETTINGS-Objekt in Login-Seite nicht gefunden.');
+        return;
+      }
+      const settings = JSON.parse(m[1]);
+      csrfToken = settings.csrf;
+      tx = settings.transId;
+      if (!csrfToken || !tx) {
+        this.log.error('GLS B2C: csrf/transId fehlt.');
+        return;
+      }
+    } catch (err) {
+      this.log.error('GLS B2C /authorize Fehler: ' + err.message);
       return;
     }
-    await this.requestClient({
-      method: 'get',
-      url: 'https://gls-one.de/api/auth/login',
-      headers: {
-        'X-Selected-Country': 'DE',
-        'Accept-Language': 'de-de',
-        'X-Selected-Language': 'DE',
-        Accept: 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
-        'X-Client-Id': 'iOS',
-        'X-Auth-Token': this.glstoken,
-      },
-    })
-      .then(async (res) => {
-        !silent && this.log.info('Login to GLS successful');
-        this.glsid = res.data._id;
-        await this.setObjectNotExistsAsync('gls', {
-          type: 'device',
-          common: {
-            name: 'GLS Tracking',
+
+    // Schritt 2: SelfAsserted-POST mit Username/Passwort
+    try {
+      const res = await b2cClient.post(
+        `${AUTHORITY}/${POLICY}/SelfAsserted?tx=${encodeURIComponent(tx)}&p=${POLICY}`,
+        qs.stringify({ request_type: 'RESPONSE', signInName: this.config.glsusername, password: this.config.glspassword }),
+        {
+          headers: {
+            'User-Agent': UA,
+            Accept: 'application/json, text/javascript, */*; q=0.01',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-CSRF-TOKEN': csrfToken,
+            'X-Requested-With': 'XMLHttpRequest',
+            Origin: 'https://login.gls-group.net',
           },
-          native: {},
-        });
-        await this.setObjectNotExistsAsync('gls.json', {
-          type: 'state',
-          common: {
-            name: 'Json Sendungen',
-            write: false,
-            read: true,
-            type: 'string',
-            role: 'json',
-          },
-          native: {},
-        });
-        this.setState('info.connection', true, true);
-        this.setState('auth.cookie', JSON.stringify(this.cookieJar.toJSON()), true);
-      })
-      .catch(async (error) => {
-        error.response && this.log.error(JSON.stringify(error.response.data));
-        this.log.error(error);
+        },
+      );
+      const payload = typeof res.data === 'object' ? res.data : (() => { try { return JSON.parse(res.data); } catch { return null; } })();
+      if (!payload || String(payload.status) !== '200') {
+        this.log.error('GLS Login fehlgeschlagen: ' + JSON.stringify(payload || res.data));
+        return;
+      }
+    } catch (err) {
+      this.log.error('GLS B2C /SelfAsserted Fehler: ' + err.message);
+      return;
+    }
+
+    // Schritt 3: confirmed-Redirect liefert den Authorization-Code
+    let authCode;
+    try {
+      const res = await b2cClient.get(
+        `${AUTHORITY}/${POLICY}/api/CombinedSigninAndSignup/confirmed?` +
+          qs.stringify({ rememberMe: 'true', csrf_token: csrfToken, tx, p: POLICY }),
+        { headers: { 'User-Agent': UA } },
+      );
+      const loc = res.headers && res.headers.location;
+      if (res.status !== 302 || !loc) {
+        this.log.error(`GLS B2C /confirmed HTTP ${res.status}, keine Redirect-Location.`);
+        return;
+      }
+      const u = new URL(loc.replace(/^msauth:/i, 'https:'));
+      authCode = u.searchParams.get('code');
+      const err = u.searchParams.get('error');
+      if (err) {
+        this.log.error(`GLS B2C error=${err}: ${u.searchParams.get('error_description')}`);
+        return;
+      }
+      if (!authCode) {
+        this.log.error('GLS B2C: kein Authorization-Code im Redirect.');
+        return;
+      }
+    } catch (err) {
+      this.log.error('GLS B2C /confirmed Fehler: ' + err.message);
+      return;
+    }
+
+    // Schritt 4: Code gegen Tokens tauschen
+    try {
+      const res = await b2cClient.post(
+        `${AUTHORITY}/${POLICY}/oauth2/v2.0/token`,
+        qs.stringify({
+          client_id: CLIENT_ID,
+          grant_type: 'authorization_code',
+          scope: SCOPES,
+          code: authCode,
+          redirect_uri: REDIRECT_URI,
+          code_verifier: verifier,
+        }),
+        { headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' } },
+      );
+      if (res.status !== 200 || !res.data || !res.data.access_token) {
+        this.log.error('GLS Token-Redemption fehlgeschlagen: ' + JSON.stringify(res.data));
+        return;
+      }
+      const session = {
+        access_token: res.data.access_token,
+        refresh_token: res.data.refresh_token,
+        expires_at: Date.now() + Number(res.data.expires_in || 3600) * 1000,
+      };
+      this.sessions['gls'] = session;
+      this.glstoken = session.access_token;
+      !silent && this.log.info('Login to GLS successful');
+      await this.setObjectNotExistsAsync('gls', {
+        type: 'device',
+        common: { name: 'GLS Tracking' },
+        native: {},
       });
+      await this.setObjectNotExistsAsync('gls.json', {
+        type: 'state',
+        common: { name: 'Json Sendungen', write: false, read: true, type: 'string', role: 'json' },
+        native: {},
+      });
+      await this.setObjectNotExistsAsync('auth.glsSession', {
+        type: 'state',
+        common: { name: 'GLS OAuth Session', write: false, read: true, type: 'string', role: 'json' },
+        native: {},
+      });
+      this.setState('auth.glsSession', JSON.stringify(session), true);
+      this.setState('info.connection', true, true);
+    } catch (err) {
+      this.log.error('GLS B2C /token Fehler: ' + err.message);
+    }
+  }
+  async refreshGLSToken(silent) {
+    // Silent Refresh via refresh_token-Grant; bei Fehlschlag Full-Login.
+    const session = this.sessions['gls'];
+    if (!session || !session.refresh_token) {
+      return this.loginGLS(silent);
+    }
+    const CLIENT_ID = 'b990fae6-1647-426b-b0a9-d51fcfed4fc8';
+    const AUTHORITY = 'https://login.gls-group.net/login.gls-group.net';
+    const POLICY = 'B2C_1A_PROD_DE_DF_SOCIAL_DEFAULT';
+    const SCOPES = [
+      'openid',
+      'offline_access',
+      'https://glsgroup.onmicrosoft.com/1635def9-6f7b-4720-be2d-7b49f8298756/GLSAPP-READ',
+      'https://glsgroup.onmicrosoft.com/1635def9-6f7b-4720-be2d-7b49f8298756/GLSAPP-WRITE',
+    ].join(' ');
+    try {
+      const res = await this.requestClient({
+        method: 'post',
+        url: `${AUTHORITY}/${POLICY}/oauth2/v2.0/token`,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        data: qs.stringify({
+          client_id: CLIENT_ID,
+          grant_type: 'refresh_token',
+          scope: SCOPES,
+          refresh_token: session.refresh_token,
+        }),
+        validateStatus: () => true,
+        timeout: 20000,
+      });
+      if (res.status !== 200 || !res.data || !res.data.access_token) {
+        this.log.info('GLS refresh_token abgelaufen, führe Full-Login aus.');
+        return this.loginGLS(silent);
+      }
+      const newSession = {
+        access_token: res.data.access_token,
+        refresh_token: res.data.refresh_token || session.refresh_token,
+        expires_at: Date.now() + Number(res.data.expires_in || 3600) * 1000,
+      };
+      this.sessions['gls'] = newSession;
+      this.glstoken = newSession.access_token;
+      this.setState('auth.glsSession', JSON.stringify(newSession), true);
+      this.setState('info.connection', true, true);
+      !silent && this.log.info('GLS token refreshed');
+    } catch (err) {
+      this.log.error('GLS refresh Fehler: ' + err.message);
+      return this.loginGLS(silent);
+    }
   }
   async loginHermes() {
     await this.requestClient({
@@ -1388,12 +1548,12 @@ class Parcel extends utils.Adapter {
       gls: [
         {
           path: 'gls',
-          url: 'https://gls-one.de/api/v3/customers/' + this.glsid + '/parcels?page=0&sort=createdDate,DESC',
+          url: 'https://gls-pakete-de-backend-app.ooh.glsnxt.com/api/v1/trackings',
           header: {
-            accept: '*/*',
-            'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+            accept: 'application/json',
+            'user-agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
             'accept-language': 'de-de',
-            'X-Auth-Token': this.glstoken,
+            authorization: 'Bearer ' + this.glstoken,
           },
         },
       ],
@@ -1460,11 +1620,10 @@ class Parcel extends utils.Adapter {
               data = res.data.Json;
             }
             if (id === 'gls') {
-              const parcels = res.data._embedded ? res.data._embedded.parcels : res.data.parcels;
-              for (const parcel of parcels) {
-                parcel.id = parcel._id.toString();
-                delete parcel._id;
-              }
+              // Neues Backend (glsnxt.com/api/v1/trackings) liefert { trackings: [...], pageInfo: {...} }
+              // Jedes Tracking: { id, trackingReference, parcelNumber, name, parcelIcon, deliveryDirection,
+              //                    deliveredAt, latestStatusText, unlocked, hasDeliveryAttemptFailed, addedAt, ... }
+              const parcels = Array.isArray(res.data && res.data.trackings) ? res.data.trackings : [];
               data = { sendungen: parcels };
             }
             if (id === 'ups') {
@@ -1644,12 +1803,15 @@ class Parcel extends utils.Adapter {
     }
     if (id === 'gls' && data.sendungen) {
       const sendungsArray = data.sendungen.map((sendung) => {
+        // Neues Schema (glsnxt): { id (UUID), trackingReference, parcelNumber, name, latestStatusText,
+        //                          deliveryDirection: "INCOMING"|"OUTGOING", deliveredAt, hasDeliveryAttemptFailed, ... }
         const sendungsObject = {
           id: sendung.id,
-          name: sendung.label || sendung.parcelNumber,
-          status: sendung.status,
+          tracking: sendung.trackingReference || sendung.parcelNumber,
+          name: sendung.name || sendung.parcelNumber || sendung.trackingReference,
+          status: sendung.latestStatusText || '',
           source: 'GLS',
-          direction: sendung.type,
+          direction: sendung.deliveryDirection,
         };
 
         sendungsObject.delivery_status = this.deliveryStatusCheck(sendung, id, sendungsObject);
@@ -1992,18 +2154,38 @@ class Parcel extends utils.Adapter {
             return dpd_status[sendung.statusId];
           }
         }
-        if (id === 'gls' && sendung.status) {
-          const gls_status = {
-            PREADVICE: this.delivery_status.REGISTERED,
-            1: this.delivery_status.REGISTERED,
-            INWAREHOUSE: this.delivery_status.IN_TRANSIT,
-            INTRANSIT: this.delivery_status.IN_TRANSIT,
-            INDELIVERY: this.delivery_status.OUT_FOR_DELIVERY,
-            DELIVERED: this.delivery_status.DELIVERED,
-            DELIVEREDPS: this.delivery_status.DELIVERED,
-          };
-          if (gls_status[sendung.status] !== undefined) {
-            return gls_status[sendung.status];
+        if (id === 'gls') {
+          // Neues Backend gibt keinen Enum-Status mehr — stattdessen:
+          //   deliveredAt (truthy) → DELIVERED
+          //   hasDeliveryAttemptFailed → ERROR
+          //   latestStatusText (deutsche Freitext-Statusmeldung) → per Substring-Match
+          if (sendung.deliveredAt) {
+            return this.delivery_status.DELIVERED;
+          }
+          if (sendung.hasDeliveryAttemptFailed) {
+            return this.delivery_status.ERROR;
+          }
+          const t = String(sendung.latestStatusText || '').toLowerCase();
+          if (!t) {
+            return this.delivery_status.UNKNOWN;
+          }
+          if (t.includes('zugestellt') || t.includes('delivered')) {
+            return this.delivery_status.DELIVERED;
+          }
+          if (t.includes('in der zustellung') || t.includes('zustellfahrzeug') || t.includes('out for delivery')) {
+            return this.delivery_status.OUT_FOR_DELIVERY;
+          }
+          if (
+            t.includes('paketzentrum') ||
+            t.includes('umschlagbetrieb') ||
+            t.includes('transport') ||
+            t.includes('unterwegs') ||
+            t.includes('eingegangen')
+          ) {
+            return this.delivery_status.IN_TRANSIT;
+          }
+          if (t.includes('vorangemeldet') || t.includes('label') || t.includes('avisiert')) {
+            return this.delivery_status.REGISTERED;
           }
         }
         if (id === 'amz' && sendung.detailedState && sendung.detailedState.shortStatus) {
@@ -2406,7 +2588,7 @@ class Parcel extends utils.Adapter {
         this.login17T(true);
       }
       if (id === 'gls') {
-        this.loginGLS(true);
+        this.refreshGLSToken(true);
       }
       if (id === 'ups') {
         this.loginUPS(true);

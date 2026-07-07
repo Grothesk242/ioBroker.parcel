@@ -4,17 +4,17 @@
     "version": "0.3.1",
     "news": {
       "0.3.1": {
-        "en": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login Fix und Captcha-Erkennung mit Hinweis",
-        "de": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login Fix und Captcha-Erkennung mit Hinweis",
-        "ru": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login Fix und Captcha-Erkennung mit Hinweis",
-        "pt": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login Fix und Captcha-Erkennung mit Hinweis",
-        "nl": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login Fix und Captcha-Erkennung mit Hinweis",
-        "fr": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Connexion Fix und Captcha-Erkennung mit Hinweis",
-        "it": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login Fix und Captcha-Erkennung mit Hinweis",
-        "es": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Acceder Fijar und Captcha-Erkennung mit Hinweis",
-        "pl": "DHL: Neuer Login über Browser- Code (dhllogin: / /)\nAmazon: Login Fix und Captcha- Erkennung mit Hinweis",
-        "uk": "DHL: Нейєр Логін über Browser-Code (dhllogin://)\nУкраїнська Русский English",
-        "zh-cn": "DHL: Neuer Login über 浏览器-代码 (dhllogin://)\n亚马逊:登录 修复 und Captcha- Erkennung mit Hinweis 系统"
+        "en": "DHL: New login via browser code (dhllogin://)\nAmazon: Login fix and captcha detection with note",
+        "de": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login-Fix und Captcha-Erkennung mit Hinweis",
+        "ru": "DHL: новый вход через код браузера (dhllogin://)\nAmazon: исправление входа и обнаружение капчи с примечанием",
+        "pt": "DHL: Novo login via código do navegador (dhllogin://)\nAmazon: Correção de login e detecção de captcha com aviso",
+        "nl": "DHL: Nieuwe login via browsercode (dhllogin://)\nAmazon: Login-fix en captcha-detectie met melding",
+        "fr": "DHL: Nouvelle connexion via code navigateur (dhllogin://)\nAmazon: correctif de connexion et détection de captcha avec note",
+        "it": "DHL: nuovo login tramite codice browser (dhllogin://)\nAmazon: fix del login e rilevamento captcha con avviso",
+        "es": "DHL: nuevo inicio de sesión mediante código de navegador (dhllogin://)\nAmazon: corrección de inicio de sesión y detección de captcha con aviso",
+        "pl": "DHL: Nowe logowanie za pomocą kodu przeglądarki (dhllogin://)\nAmazon: poprawka logowania i wykrywanie captcha z komunikatem",
+        "uk": "DHL: Новий вхід через код браузера (dhllogin://)\nAmazon: Виправлення входу і виявлення капчі з повідомленням",
+        "zh-cn": "DHL：通过浏览器代码进行新登录 (dhllogin://)\n亚马逊：修复登录并检测验证码并给出提示"
       },
       "0.2.10": {
         "en": "add alternative way for dhl login\nmove dhl connections error to info level",
@@ -29,44 +29,18 @@
         "uk": "додати альтернативний спосіб для входу в систему\nперемістити помилки з'єднанням dhl на інформаційний рівень",
         "zh-cn": "添加 dhl 登录的替代方式\n将 dhl 连接错误移动到信息级别"
       },
-      "0.2.9": {
-        "en": "add alternative way for dhl login\nmove dhl connections error to info level",
-        "de": "alternative möglichkeit für dhl login\ndhl verbindungsfehler auf info level verschoben",
-        "ru": "добавить альтернативный способ dhl login\nперенести ошибку подключений dhl на уровень информации",
-        "pt": "adicionar maneira alternativa para dhl login\nmover erro de conexões dhl para nível de informação",
-        "nl": "alternatieve manier toevoegen voor dhl login\ndhl-verbindingsfout naar infoniveau verplaatsen",
-        "fr": "ajouter une autre façon pour la connexion dhl\ndéplacer l'erreur de connexions dhl au niveau info",
-        "it": "aggiungere modo alternativo per il login dhl\nspostare l'errore di connessioni dhl a livello info",
-        "es": "añadir la forma alternativa para dhl login\nmovimiento dhl conexiones error a nivel de información",
-        "pl": "dodaj alternatywny sposób logowania dhl\nprzenieść błąd połączeń dhl do poziomu informacji",
-        "uk": "додати альтернативний спосіб для входу в систему\nперемістити помилки з'єднанням dhl на інформаційний рівень",
-        "zh-cn": "添加 dhl 登录的替代方式\n将 dhl 连接错误移动到信息级别"
-      },
       "0.2.8": {
         "en": "fix amazon login",
-        "de": "fix amazon login",
+        "de": "Amazon-Login behoben",
         "ru": "исправить логин амазон",
         "pt": "corrigir amazon login",
-        "nl": "fix amazon login",
+        "nl": "amazon-login gerepareerd",
         "fr": "correction de la connexion amazon",
-        "it": "fix amazon login",
+        "it": "correzione del login amazon",
         "es": "fijar amazon login",
         "pl": "naprawić logowanie amazon",
         "uk": "виправити amazon увійти",
         "zh-cn": "修补amazon 登录"
-      },
-      "0.2.8-beta.0": {
-        "en": "improve amazon login",
-        "de": "amazon login verbessern",
-        "ru": "улучшить логин amazon",
-        "pt": "melhorar o login amazon",
-        "nl": "amazon login verbeteren",
-        "fr": "améliorer la connexion amazon",
-        "it": "migliorare amazon login",
-        "es": "mejorar amazon login",
-        "pl": "poprawić logowanie amazon",
-        "uk": "поліпшити логін amazon",
-        "zh-cn": "改进amazon 登录"
       },
       "0.2.7": {
         "en": "Fix for UPS Login",
@@ -77,7 +51,6 @@
         "de": "Verbesserung des DHL Status und Link zur Sendung in der Telegram Benachrichtigung hinzugefügt"
       }
     },
-    "title": "Parcel tracking",
     "titleLang": {
       "en": "Parcel tracking",
       "de": "Paket Sendungsverfolgung",
@@ -88,6 +61,7 @@
       "it": "Tracciamento del pacco",
       "es": "Seguimiento de paquetes",
       "pl": "Śledzenie przesyłek",
+      "uk": "Відстеження посилок",
       "zh-cn": "包裹追踪"
     },
     "desc": {
@@ -100,6 +74,7 @@
       "it": "Tracciamento del pacco",
       "es": "Seguimiento de paquetes",
       "pl": "Śledzenie przesyłek",
+      "uk": "Відстеження посилок",
       "zh-cn": "包裹追踪"
     },
     "authors": [
@@ -120,9 +95,12 @@
       "dpd",
       "briefe"
     ],
-    "license": "MIT",
+    "licenseInformation": {
+      "license": "MIT",
+      "type": "free"
+    },
+    "tier": 3,
     "platform": "Javascript/Node.js",
-    "main": "main.js",
     "icon": "parcel.png",
     "enabled": true,
     "extIcon": "https://raw.githubusercontent.com/TA2k/ioBroker.parcel/master/admin/parcel.png",
@@ -133,7 +111,9 @@
     "compact": true,
     "connectionType": "cloud",
     "dataSource": "poll",
-    "materialize": true,
+    "adminUI": {
+      "config": "materialize"
+    },
     "plugins": {
       "sentry": {
         "dsn": "https://6296452769de44959c1809642564a7e3@sentry.iobroker.net/171"
@@ -141,12 +121,12 @@
     },
     "dependencies": [
       {
-        "js-controller": ">=3.2.0"
+        "js-controller": ">=6.0.11"
       }
     ],
     "globalDependencies": [
       {
-        "admin": ">=4.0.9"
+        "admin": ">=7.6.20"
       }
     ]
   },
@@ -158,7 +138,8 @@
     "hermespassword",
     "postchpassword",
     "postatpassword",
-    "glspassword"
+    "glspassword",
+    "aliPassword"
   ],
   "protectedNative": [
     "amzpassword",
@@ -168,7 +149,8 @@
     "hermespassword",
     "postchpassword",
     "postatpassword",
-    "glspassword"
+    "glspassword",
+    "aliPassword"
   ],
   "native": {
     "dhlActive": true,
@@ -342,10 +324,10 @@
       "_id": "refresh",
       "type": "state",
       "common": {
-        "role": "boolean",
+        "role": "button",
         "name": "Force data refresh",
         "type": "boolean",
-        "read": true,
+        "read": false,
         "write": true,
         "def": false
       },

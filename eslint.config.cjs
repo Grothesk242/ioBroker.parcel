@@ -12,7 +12,7 @@ const compat = new FlatCompat({
 });
 
 module.exports = [{
-  ignores: ['**/.eslintrc.js'],
+  ignores: ['**/.eslintrc.js', 'test/.references/**', '.references/**', 'admin/words.js'],
 }, ...compat.extends('eslint:recommended'), {
   plugins: {},
 

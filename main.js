@@ -1578,21 +1578,6 @@ class Parcel extends utils.Adapter {
     if (this.sessions['amz']) {
       await this.getAmazonPackages();
     }
-    // DPD läuft über SOAP (getSessionFullState), nicht über den generischen
-    // statusArrays-Loop. Ergebnis wird wie andere Provider in mergedJson gemerged.
-    if (this.sessions['dpd']) {
-      const dpdData = await this.fetchDPDParcels();
-      if (dpdData) {
-        await this.cleanupProvider('dpd', dpdData);
-        this.mergeProviderJson('dpd', dpdData);
-        this.json2iob.parse('dpd', dpdData, {
-          forceIndex: true,
-          preferedArrayName: null,
-          dontSaveCreatedObjects: true,
-        });
-        this.setState('dpd.json', JSON.stringify(dpdData), true);
-      }
-    }
     const statusArrays = {
       dhl: [
         {
@@ -1638,8 +1623,13 @@ class Parcel extends utils.Adapter {
         },
       ],
       amz: [],
-      // dpd: fetched separately via fetchDPDParcels() before the loop below,
-      // because it uses a SOAP flow (not the generic REST-GET).
+      // DPD läuft über SOAP (getSessionFullState), nicht über generisches HTTP-GET.
+      // Der Marker `custom: 'dpd'` sagt dem Loop weiter unten: nicht requestClient,
+      // sondern fetchDPDParcels() aufrufen. Rest der Pipeline (cleanupProvider,
+      // mergeProviderJson, json2iob.parse, setState 'dpd.json') bleibt identisch.
+      dpd: [
+        { path: 'dpd', custom: 'dpd' },
+      ],
       gls: [
         {
           path: 'gls',
@@ -1693,18 +1683,29 @@ class Parcel extends utils.Adapter {
       // über den eigenen SOAP-Fetch weiter oben) hier überspringen.
       if (!statusArrays[id]) continue;
       for (const element of statusArrays[id]) {
-        this.log.debug(element.url);
+        // Custom-Fetch: statt requestClient wird der Provider-eigene
+        // Fetch aufgerufen, das Ergebnis läuft aber durch dieselbe .then()-Pipeline
+        // (cleanupProvider → mergeProviderJson → json2iob.parse → setState).
+        const requestFn = element.custom === 'dpd'
+          ? async () => {
+            const data = await this.fetchDPDParcels();
+            return { data: data || null };
+          }
+          : () => this.requestClient({
+            method: element.method ? element.method : 'get',
+            url: element.url,
+            headers: element.header,
+            data: element.data,
+            timeout: element.url && element.url.includes('dhl.de') ? 15000 : undefined,
+          });
+        if (!element.custom) {
+          this.log.debug(element.url);
+        }
         if (this.ignoredPath.includes(element.path)) {
           this.log.debug('Ignore: ' + element.path);
           continue;
         }
-        await this.requestClient({
-          method: element.method ? element.method : 'get',
-          url: element.url,
-          headers: element.header,
-          data: element.data,
-          timeout: element.url.includes('dhl.de') ? 15000 : undefined,
-        })
+        await requestFn()
           .then(async (res) => {
             this.log.debug(JSON.stringify(res.data));
             if (!res.data) {

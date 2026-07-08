@@ -1689,6 +1689,9 @@ class Parcel extends utils.Adapter {
     };
 
     for (const id of Object.keys(this.sessions)) {
+      // Provider ohne generischen statusArrays-Eintrag (z.B. DPD läuft
+      // über den eigenen SOAP-Fetch weiter oben) hier überspringen.
+      if (!statusArrays[id]) continue;
       for (const element of statusArrays[id]) {
         this.log.debug(element.url);
         if (this.ignoredPath.includes(element.path)) {

@@ -22,6 +22,7 @@ const { tmpdir } = require('os');
 
 const dhlDecrypt = require('./lib/dhldecrypt');
 const { loginDhlNew: dhlLoginNew } = require('./lib/dhlLogin');
+const { loginDPD: dpdLoginSoap, fetchDPDParcels: dpdFetchParcels } = require('./lib/dpdLogin');
 class Parcel extends utils.Adapter {
   /**
    * @param {Partial<utils.AdapterOptions>} [options={}]
@@ -119,8 +120,22 @@ class Parcel extends utils.Adapter {
     }
 
     if (this.config.dpdActive !== false && this.config.dpdusername && this.config.dpdpassword) {
-      this.log.info('Login to DPD');
-      await this.loginDPD();
+      const dpdSessionState = await this.getStateAsync('auth.dpdSession');
+      if (dpdSessionState && dpdSessionState.val) {
+        try {
+          const parsed = JSON.parse(String(dpdSessionState.val));
+          if (parsed && parsed.SessionToken && parsed.cloudUserID != null) {
+            this.log.info('Reuse existing DPD session (SessionFullState will verify).');
+            this.sessions['dpd'] = parsed;
+          }
+        } catch {
+          // fall through to fresh login
+        }
+      }
+      if (!this.sessions['dpd']) {
+        this.log.info('Login to DPD');
+        await this.loginDPD();
+      }
     }
     if (this.config.t17Active !== false && this.config.t17username && this.config.t17password) {
       this.log.info('Login to T17 User');
@@ -885,75 +900,93 @@ class Parcel extends utils.Adapter {
         } catch { /* ignore */ }
       });
   }
+  // ------- DPD (SOAP) -------
+  // Der eigentliche SOAP-Flow liegt in lib/dpdLogin.js (analog zu lib/dhlLogin.js).
+  // Hier nur die Adapter-Klebeschicht: Session-Persistenz, State-Objekte,
+  // Retry-Kaskade zwischen Fetch und Re-Login.
+  /**
+   * Löscht die DPD-Session aus dem laufenden Prozess UND aus dem persistierten
+   * `auth.dpdSession`-State, damit weder ein aktuell laufender Fetch noch der
+   * nächste Adapter-Start eine ungültige Session weiter benutzt.
+   */
+  async clearDPDSession() {
+    delete this.sessions['dpd'];
+    try {
+      await this.setStateAsync('auth.dpdSession', '', true);
+    } catch {
+      /* noop */
+    }
+  }
   async loginDPD(silent) {
-    await this.requestClient({
-      method: 'get',
-      url: 'https://my.dpd.de/logout.aspx',
-    }).catch(async (error) => {
-      this.logAxiosError('DPD/login', error);
+    const session = await dpdLoginSoap({
+      requestClient: this.requestClient,
+      username: this.config.dpdusername,
+      password: this.config.dpdpassword,
+      log: this.log,
     });
-    await this.requestClient({
-      method: 'post',
-      url: 'https://www.dpd.com/de/de/mydpd-anmelden-und-registrieren/',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        'user-agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.66 Safari/537.36',
-        accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-        'accept-language': 'de,en;q=0.9',
-      },
-      data: qs.stringify({
-        dpg_username: this.config.dpdusername,
-        dpg_password: this.config.dpdpassword,
-      }),
-      maxRedirects: 0,
-    })
-      .then(async (res) => {
-        if (res.data && res.data.indexOf('Login fehlgeschlagen') !== -1) {
-          this.log.error('Login to DPD failed, please check username and password');
-          return;
-        }
-      })
-      .catch(async (error) => {
-        if (error.response) {
-          if (error.response.status === 302) {
-            this.dpdToken = error.response.headers.location.split('=')[1];
-            !silent && this.log.info('Login to DPD successful');
-            this.sessions['dpd'] = true;
-            await this.setObjectNotExistsAsync('dpd', {
-              type: 'device',
-              common: {
-                name: 'DPD Tracking',
-              },
-              native: {},
-            });
-            await this.setObjectNotExistsAsync('dpd.json', {
-              type: 'state',
-              common: {
-                name: 'Json Sendungen',
-                write: false,
-                read: true,
-                type: 'string',
-                role: 'json',
-              },
-              native: {},
-            });
-            this.setState('info.connection', true, true);
-            this.setState('auth.cookie', JSON.stringify(this.cookieJar.toJSON()), true);
-            return;
-          }
+    if (!session) {
+      await this.clearDPDSession();
+      return;
+    }
+    this.sessions['dpd'] = session;
+    !silent && this.log.info('Login to DPD successful (SOAP)');
 
-          this.logAxiosError('DPD/login', error);
-          this.log.error(JSON.stringify(error.response.data));
-        }
-      });
-    await this.requestClient({
-      method: 'get',
-      url: 'https://my.dpd.de/myParcel.aspx?dpd_token=' + this.dpdToken,
-    }).catch(async (error) => {
-      this.logAxiosError('DPD/login', error);
+    await this.setObjectNotExistsAsync('dpd', {
+      type: 'device',
+      common: { name: 'DPD Tracking' },
+      native: {},
     });
+    await this.setObjectNotExistsAsync('dpd.json', {
+      type: 'state',
+      common: { name: 'Json Sendungen', write: false, read: true, type: 'string', role: 'json' },
+      native: {},
+    });
+    await this.setObjectNotExistsAsync('auth.dpdSession', {
+      type: 'state',
+      common: { name: 'DPD SOAP Session', write: false, read: true, type: 'string', role: 'json' },
+      native: {},
+    });
+    this.setState('auth.dpdSession', JSON.stringify(session), true);
+    this.setState('info.connection', true, true);
+  }
+  /**
+   * Holt die aktuelle Sendungsliste. Bei ungültiger Session wird einmalig
+   * ein Re-Login versucht.
+   */
+  async fetchDPDParcels(retry) {
+    const session = this.sessions['dpd'];
+    if (!session || !session.SessionToken) {
+      this.log.debug('fetchDPDParcels: keine Session, überspringe');
+      return null;
+    }
+    const result = await dpdFetchParcels({
+      requestClient: this.requestClient,
+      session,
+      log: this.log,
+    });
+    if (!result) return null;
+    if (result.status === 'ok') {
+      if (result.sessionToken) {
+        session.SessionToken = result.sessionToken;
+        this.setState('auth.dpdSession', JSON.stringify(session), true);
+      }
+      return result.data;
+    }
+    if (result.status === 'invalid-session') {
+      if (retry) {
+        this.log.error(`[DPD/fetch] error after re-login: ${result.errorCode || 'unknown'}`);
+        await this.clearDPDSession();
+        return null;
+      }
+      this.log.info(`[DPD/fetch] session invalid (${result.errorCode || 'unknown'}), attempting re-login`);
+      await this.loginDPD(true);
+      if (this.sessions['dpd']) {
+        return this.fetchDPDParcels(true);
+      }
+      return null;
+    }
+    // status === 'error' — vom Modul bereits geloggt
+    return null;
   }
   async loginGLS(silent) {
     // Azure AD B2C Authorization-Code + PKCE flow — nachgebaut aus der GLS-App v6.3.0.
@@ -1545,6 +1578,21 @@ class Parcel extends utils.Adapter {
     if (this.sessions['amz']) {
       await this.getAmazonPackages();
     }
+    // DPD läuft über SOAP (getSessionFullState), nicht über den generischen
+    // statusArrays-Loop. Ergebnis wird wie andere Provider in mergedJson gemerged.
+    if (this.sessions['dpd']) {
+      const dpdData = await this.fetchDPDParcels();
+      if (dpdData) {
+        await this.cleanupProvider('dpd', dpdData);
+        this.mergeProviderJson('dpd', dpdData);
+        this.json2iob.parse('dpd', dpdData, {
+          forceIndex: true,
+          preferedArrayName: null,
+          dontSaveCreatedObjects: true,
+        });
+        this.setState('dpd.json', JSON.stringify(dpdData), true);
+      }
+    }
     const statusArrays = {
       dhl: [
         {
@@ -1590,20 +1638,8 @@ class Parcel extends utils.Adapter {
         },
       ],
       amz: [],
-      dpd: [
-        {
-          path: 'dpd',
-          url: 'https://my.dpd.de/myParcel.aspx', //?dpd_token=" + this.dpdToken,
-          header: {
-            accept: '*/*',
-            'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.45 Safari/537.36',
-            'accept-language': 'de-de',
-            'Cache-Control': 'no-cache',
-            Pragma: 'no-cache',
-            Expires: '0',
-          },
-        },
-      ],
+      // dpd: fetched separately via fetchDPDParcels() before the loop below,
+      // because it uses a SOAP flow (not the generic REST-GET).
       gls: [
         {
           path: 'gls',
@@ -1711,10 +1747,7 @@ class Parcel extends utils.Adapter {
             }
             const forceIndex = true;
             const preferedArrayName = null;
-            if (id === 'dpd') {
-              data = this.convertDomToJson(data);
-            }
-            //filter archive message
+            // filter archive message
             if (id === 'dhl' && data.sendungen) {
               const trackingList = [];
               data.sendungen = data.sendungen.filter((sendung) => {
@@ -1950,9 +1983,16 @@ class Parcel extends utils.Adapter {
           name: sendung.name,
           status: sendung.status || '',
           source: 'DPD',
+          direction: sendung.direction, // send / receive / return
+          eta: sendung.eta || '',
         };
 
-        sendungsObject.delivery_status = this.deliveryStatusCheck(sendung, id, sendungsObject);
+        // Wenn schon vom Server "Delivered=true" gemeldet, direkt DELIVERED
+        if (sendung.delivered) {
+          sendungsObject.delivery_status = this.delivery_status.DELIVERED;
+        } else {
+          sendungsObject.delivery_status = this.deliveryStatusCheck(sendung, id, sendungsObject);
+        }
         if (sendungsObject.delivery_status === this.delivery_status.OUT_FOR_DELIVERY) {
           sendungsObject.inDelivery = true;
           this.inDelivery.push(sendungsObject);
@@ -2200,7 +2240,40 @@ class Parcel extends utils.Adapter {
           // }
         }
         if (id === 'dpd' && sendung.statusId) {
+          // StatusID-Werte aus der DPD-App v4.1.2 (SOAP-Response).
+          // Belege in der APK unter smali/com/dpd/navigator/{commons/Constant.smali,
+          // ui/**} für: DATA_TRANSMITTED, NO_TRACKINGDATA, RETURN_TO_SENDER,
+          // OUT_FOR_DELIVERY, DELIVERED. Restliche Werte (ACCEPTED, ON_THE_ROAD,
+          // AT_DELIVERY_DEPOT, ...) beobachtet in Live-Response.
           const dpd_status = {
+            // "Vor-Transit"
+            NO_TRACKINGDATA: this.delivery_status.REGISTERED,
+            DATA_TRANSMITTED: this.delivery_status.REGISTERED,
+            ACCEPTED: this.delivery_status.REGISTERED,
+            START: this.delivery_status.REGISTERED,
+            // In Transit
+            COLLECTED: this.delivery_status.IN_TRANSIT,
+            AT_SENDING_DEPOT: this.delivery_status.IN_TRANSIT,
+            ON_THE_ROAD: this.delivery_status.IN_TRANSIT,
+            AT_DELIVERY_DEPOT: this.delivery_status.IN_TRANSIT,
+            SORTED: this.delivery_status.IN_TRANSIT,
+            SORTED_TO_PICKUP_LOCATION: this.delivery_status.IN_TRANSIT,
+            PARCEL_PROCESSING: this.delivery_status.IN_TRANSIT,
+            // Zustellung läuft
+            OUT_FOR_DELIVERY: this.delivery_status.OUT_FOR_DELIVERY,
+            IN_DELIVERY: this.delivery_status.OUT_FOR_DELIVERY,
+            AT_PARCELSHOP: this.delivery_status.OUT_FOR_DELIVERY,
+            // Endstate
+            DELIVERED: this.delivery_status.DELIVERED,
+            PICKED_UP: this.delivery_status.DELIVERED,
+            // Rücksendung — als Endstate behandelt (keine weitere Zustellung)
+            RETURN_TO_SENDER: this.delivery_status.DELIVERED,
+          };
+          if (dpd_status[sendung.statusId] !== undefined) {
+            return dpd_status[sendung.statusId];
+          }
+          // Fallback: numerisch (falls doch Zahl kommt, wie beim Legacy-Web-Flow)
+          const dpd_status_num = {
             0: this.delivery_status.REGISTERED,
             1: this.delivery_status.IN_PREPARATION,
             2: this.delivery_status.IN_TRANSIT,
@@ -2209,8 +2282,8 @@ class Parcel extends utils.Adapter {
             5: this.delivery_status.OUT_FOR_DELIVERY,
             6: this.delivery_status.DELIVERED,
           };
-          if (dpd_status[sendung.statusId] !== undefined) {
-            return dpd_status[sendung.statusId];
+          if (dpd_status_num[sendung.statusId] !== undefined) {
+            return dpd_status_num[sendung.statusId];
           }
         }
         if (id === 'gls') {
@@ -2296,32 +2369,6 @@ class Parcel extends utils.Adapter {
         this.logAxiosError('DHL/activateToken', error);
         error.response && this.log.error(JSON.stringify(error.response.data));
       });
-  }
-  convertDomToJson(body) {
-    const dom = new JSDOM(body);
-    const result = { sendungen: [] };
-    const parcelList = dom.window.document.querySelector('.parcelList');
-    if (!parcelList) {
-      this.log.debug('No DPD parcelList found');
-      return result;
-    }
-    this.log.debug('Found DPD Parcel List');
-    this.log.debug('Found ' + parcelList.querySelectorAll('.btnSelectParcel').length + ' parcels');
-    parcelList.querySelectorAll('.btnSelectParcel').forEach((parcel) => {
-      const parcelInfo = parcel.firstElementChild;
-      this.log.debug(parcelInfo.textContent);
-      let statusId = parcelInfo.querySelector('img').src;
-      if (statusId) {
-        statusId = statusId.replace('images/status_', '').replace('.svg', '');
-      }
-      result.sendungen.push({
-        id: parcelInfo.querySelector('.parcelNo').textContent,
-        name: parcelInfo.querySelector('.parcelName').textContent,
-        status: parcelInfo.querySelector('.parcelDeliveryStatus').textContent,
-        statusId: statusId,
-      });
-    });
-    return result;
   }
   async getAmazonPackages() {
     this.log.debug('Get Amazon Packages');
@@ -2641,7 +2688,7 @@ class Parcel extends utils.Adapter {
           });
       }
       if (id === 'dpd') {
-        this.loginDPD(true);
+        await this.loginDPD(true);
       }
       if (id === '17tuser') {
         this.login17T(true);

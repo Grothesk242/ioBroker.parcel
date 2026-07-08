@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "parcel",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "news": {
+      "0.3.2": {
+        "en": "Fix for DPD\nFix for GLS",
+        "de": "DPD-Login-Problem beheben\nGLS-Login-Problem behoben",
+        "ru": "Исправление для DPD\nИсправление для GLS",
+        "pt": "Correção para DPD\nCorreção para GLS",
+        "nl": "Oplossing voor DPD\nOplossing voor GLS",
+        "fr": "Correctif pour DPD\nCorrectif pour GLS",
+        "it": "Correzione per DPD\nCorrezione per GLS",
+        "es": "Solución para DPD\nSolución para GLS",
+        "pl": "Poprawka dla DPD\nPoprawka dla GLS",
+        "uk": "Виправлення для DPD\nВиправлення для GLS",
+        "zh-cn": "修复 DPD\nGLS修复"
+      },
       "0.3.1": {
         "en": "DHL: New login via browser code (dhllogin://)\nAmazon: Login fix and captcha detection with note",
         "de": "DHL: Neuer Login über Browser-Code (dhllogin://)\nAmazon: Login-Fix und Captcha-Erkennung mit Hinweis",

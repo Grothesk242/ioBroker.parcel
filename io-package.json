@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "parcel",
-    "version": "0.3.2",
+    "version": "0.3.3",
     "news": {
+      "0.3.3": {
+        "en": "Fix GLS states",
+        "de": "GLS-Zustände gefixt",
+        "ru": "Исправить состояния GLS",
+        "pt": "Corrigir estados GLS",
+        "nl": "GLS-status corrigeren",
+        "fr": "Corriger les états GLS",
+        "it": "Correggere gli stati GLS",
+        "es": "Corregir estados GLS",
+        "pl": "Napraw stany GLS",
+        "uk": "Виправити стани GLS",
+        "zh-cn": "修复 GLS 状态"
+      },
       "0.3.2": {
         "en": "Fix for DPD\nFix for GLS",
         "de": "DPD-Login-Problem beheben\nGLS-Login-Problem behoben",

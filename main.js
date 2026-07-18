@@ -23,6 +23,7 @@ const { tmpdir } = require('os');
 const dhlDecrypt = require('./lib/dhldecrypt');
 const { loginDhlNew: dhlLoginNew } = require('./lib/dhlLogin');
 const { loginDPD: dpdLoginSoap, fetchDPDParcels: dpdFetchParcels } = require('./lib/dpdLogin');
+const { classifyGlsDeliveryStatus } = require('./lib/glsStatus');
 class Parcel extends utils.Adapter {
   /**
    * @param {Partial<utils.AdapterOptions>} [options={}]
@@ -2291,76 +2292,9 @@ class Parcel extends utils.Adapter {
           }
         }
         if (id === 'gls') {
-          // Neues Backend liefert ein Enum in estimate.updatedDeliveryStatus /
-          // estimate.deliveryStatus (Werte aus der GLS-App v6.3.0). Das ist das
-          // zuverlässigste Signal — davor kam nur latestStatustext-Freitext.
-          const gls_status = {
-            PREADVICE: this.delivery_status.REGISTERED,
-            ESTIMATE_AVAILABLE_SOON: this.delivery_status.IN_TRANSIT,
-            DELIVERY_IN_TWO_OR_MORE_DAYS__ESTIMATE_PENDING: this.delivery_status.IN_TRANSIT,
-            DELIVERY_IN_TWO_OR_MORE_DAYS__ESTIMATE_CONFIRMED: this.delivery_status.IN_TRANSIT,
-            DELIVERY_IN_ONE_DAY: this.delivery_status.IN_TRANSIT,
-            DELIVERY_TODAY: this.delivery_status.OUT_FOR_DELIVERY,
-            DELIVERED_TO_RECIPIENT: this.delivery_status.DELIVERED,
-            DELIVERED_TO_NEIGHBOR: this.delivery_status.DELIVERED,
-            DELIVERED_TO_LETTERBOX: this.delivery_status.DELIVERED,
-            DELIVERED_TO_DROPOFF: this.delivery_status.DELIVERED,
-            DELIVERED_TO_PARCEL_LOCKER: this.delivery_status.DELIVERED,
-            DELIVERED_TO_PARCEL_SHOP: this.delivery_status.DELIVERED,
-            DELIVERY_FINALIZED: this.delivery_status.DELIVERED,
-            PICKED_UP_FROM_LOCKER: this.delivery_status.DELIVERED,
-            PICKED_UP_FROM_SHOP: this.delivery_status.DELIVERED,
-            DELIVERY_UNSUCCESSFUL: this.delivery_status.ERROR,
-            DELIVERY_DECLINED_BY_CONSIGNEE: this.delivery_status.ERROR,
-            DELIVERY_CANCELLED: this.delivery_status.ERROR,
-            COULD_NOT_BE_DELIVERED_TO_OCCUPIED_PARCEL_LOCKER: this.delivery_status.ERROR,
-            DELIVERY_SENT_BACK_TO_WAREHOUSE: this.delivery_status.ERROR,
-            RETURNED_TO_DEPOT_FOR_PICKUP: this.delivery_status.IN_TRANSIT,
-            RETURNED_TO_PARCEL_SHOP_FOR_PICKUP: this.delivery_status.IN_TRANSIT,
-          };
-          const estimate = sendung.estimate || {};
-          const enumStatus = estimate.updatedDeliveryStatus || estimate.deliveryStatus;
-          if (enumStatus && gls_status[enumStatus] !== undefined) {
-            return gls_status[enumStatus];
-          }
-          // Fallback wenn kein/unbekannter Enum-Status:
-          //   deliveredAt (truthy) → DELIVERED
-          //   hasDeliveryAttemptFailed → ERROR
-          //   latestStatusText (deutsche Freitext-Statusmeldung) → per Substring-Match
-          if (sendung.deliveredAt) {
-            return this.delivery_status.DELIVERED;
-          }
-          if (sendung.hasDeliveryAttemptFailed) {
-            return this.delivery_status.ERROR;
-          }
-          const t = String(sendung.latestStatusText || '').toLowerCase();
-          if (!t) {
-            return this.delivery_status.UNKNOWN;
-          }
-          if (t.includes('zugestellt') || t.includes('delivered')) {
-            return this.delivery_status.DELIVERED;
-          }
-          if (
-            t.includes('in der zustellung') ||
-            t.includes('zustellfahrzeug') ||
-            t.includes('im laufe des tages') ||
-            t.includes('out for delivery')
-          ) {
-            return this.delivery_status.OUT_FOR_DELIVERY;
-          }
-          if (
-            t.includes('paketzentrum') ||
-            t.includes('umschlagbetrieb') ||
-            t.includes('transport') ||
-            t.includes('unterwegs') ||
-            t.includes('eingegangen') ||
-            t.includes('eingetroffen') ||
-            t.includes('übernommen')
-          ) {
-            return this.delivery_status.IN_TRANSIT;
-          }
-          if (t.includes('vorangemeldet') || t.includes('label') || t.includes('avisiert') || t.includes('erfasst')) {
-            return this.delivery_status.REGISTERED;
+          const glsStatus = classifyGlsDeliveryStatus(sendung, this.delivery_status);
+          if (glsStatus !== undefined) {
+            return glsStatus;
           }
         }
         if (id === 'amz' && sendung.detailedState && sendung.detailedState.shortStatus) {
